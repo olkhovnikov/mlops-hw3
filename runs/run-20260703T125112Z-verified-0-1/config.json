@@ -1,0 +1,12 @@
+{
+  "run_id": "run-20260703T125112Z-verified-0-1",
+  "split": "test",
+  "subset": "verified",
+  "dataset_name": "princeton-nlp/SWE-bench_Verified",
+  "model": "nebius/moonshotai/Kimi-K2.6",
+  "workers": 2,
+  "task_slice": "0:1",
+  "cost_limit": 1.0,
+  "created_at": "20260703T125112Z",
+  "git_sha": "e1cfa8b"
+}
