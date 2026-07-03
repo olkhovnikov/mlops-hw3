@@ -274,7 +274,9 @@ def _rel(path: Path, run_dir: Path) -> str | None:
         return None
 
 
-def write_manifest(run_dir: Path, run_config: dict, metrics: dict) -> Path:
+def write_manifest(
+    run_dir: Path, run_config: dict, metrics: dict, remote_uri: str | None = None
+) -> Path:
     """Write manifest.json pointing at the key files so one folder is enough
     to reconstruct the whole run."""
     run_dir = Path(run_dir)
@@ -301,9 +303,9 @@ def write_manifest(run_dir: Path, run_config: dict, metrics: dict) -> Path:
         # Phase 1 keeps artifacts local. Phase 2/3 will upload this folder to
         # object storage and record the URI here (e.g. s3://bucket/runs/<id>/).
         "artifact_root": {
-            "type": "local",
+            "type": "s3" if remote_uri else "local",
             "path": str(run_dir.resolve()),
-            "remote_uri": None,
+            "remote_uri": remote_uri,
         },
     }
     path = run_dir / "manifest.json"
@@ -311,7 +313,73 @@ def write_manifest(run_dir: Path, run_config: dict, metrics: dict) -> Path:
     return path
 
 
-def log_mlflow_run(run_config: dict, metrics: dict, run_dir: Path) -> None:
+# --------------------------------------------------------------------------- #
+# 7. object storage (S3 / MinIO)
+# --------------------------------------------------------------------------- #
+def _s3_config() -> tuple[str, str] | None:
+    """(endpoint_url, bucket) if S3 upload is configured, else None.
+
+    Upload is opt-in: with S3_ENDPOINT_URL unset the pipeline runs unchanged and
+    keeps artifacts local.
+    """
+    endpoint = os.environ.get("S3_ENDPOINT_URL")
+    bucket = os.environ.get("S3_BUCKET")
+    if not endpoint or not bucket:
+        return None
+    return endpoint, bucket
+
+
+def run_s3_uri(run_config: dict) -> str | None:
+    """Deterministic destination URI for a run (known before upload)."""
+    cfg = _s3_config()
+    if cfg is None:
+        return None
+    _, bucket = cfg
+    return f"s3://{bucket}/runs/{run_config['run_id']}"
+
+
+def upload_run_to_s3(run_dir: Path, run_config: dict) -> str | None:
+    """Upload the whole runs/<run-id>/ tree to S3/MinIO under runs/<run-id>/.
+
+    Returns the s3:// URI, or None if S3 is not configured.
+    """
+    cfg = _s3_config()
+    if cfg is None:
+        print("[upload_run_to_s3] S3 not configured (S3_ENDPOINT_URL unset); skipping")
+        return None
+    endpoint, bucket = cfg
+
+    import boto3
+
+    s3 = boto3.client("s3", endpoint_url=endpoint)
+    # Ensure the bucket exists (idempotent; docker-compose also creates it).
+    try:
+        s3.head_bucket(Bucket=bucket)
+    except Exception:
+        s3.create_bucket(Bucket=bucket)
+
+    run_dir = Path(run_dir)
+    prefix = f"runs/{run_config['run_id']}"
+    n = 0
+    for f in run_dir.rglob("*"):
+        if f.is_file():
+            key = f"{prefix}/{f.relative_to(run_dir).as_posix()}"
+            s3.upload_file(str(f), bucket, key)
+            n += 1
+    uri = f"s3://{bucket}/{prefix}"
+    print(f"[upload_run_to_s3] uploaded {n} files -> {uri} (endpoint {endpoint})")
+    return uri
+
+
+# --------------------------------------------------------------------------- #
+# 8. mlflow
+# --------------------------------------------------------------------------- #
+def log_mlflow_run(
+    run_config: dict,
+    metrics: dict,
+    run_dir: Path,
+    artifact_uri: str | None = None,
+) -> None:
     """Log params, metrics, and artifact references to MLflow.
 
     Tracking URI defaults to a local sqlite store so no server is required for
@@ -345,7 +413,8 @@ def log_mlflow_run(run_config: dict, metrics: dict, run_dir: Path) -> None:
         mlflow.set_tags(
             {
                 "run_dir": str(run_dir.resolve()),
-                "artifact_root": str(run_dir.resolve()),
+                "artifact_root": artifact_uri or str(run_dir.resolve()),
+                "artifact_s3_uri": artifact_uri or "",
             }
         )
         # Log the small, human-readable summaries as artifacts (references to the

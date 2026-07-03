@@ -13,8 +13,8 @@
     "eval_logs": "run-eval/logs/run_evaluation"
   },
   "artifact_root": {
-    "type": "local",
+    "type": "s3",
     "path": "/home/skomik/mlops-hw3/runs/run-20260703T125112Z-verified-0-1",
-    "remote_uri": null
+    "remote_uri": "s3://swe-runs/runs/run-20260703T125112Z-verified-0-1"
   }
 }

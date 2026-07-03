@@ -96,15 +96,22 @@ def evaluate_agent():
         return run_dir
 
     @task
-    def summarize_and_log(run_dir: str) -> str:
-        """Write metrics.json + manifest.json and log the run to MLflow."""
+    def summarize(run_dir: str) -> str:
+        """Parse eval reports -> metrics.json + manifest.json."""
         _pipeline(["summarize", "--run-dir", run_dir])
+        return run_dir
+
+    @task
+    def publish_artifacts(run_dir: str) -> str:
+        """Upload runs/<run-id>/ to S3/MinIO (if configured) and log to MLflow."""
+        _pipeline(["publish", "--run-dir", run_dir])
         return run_dir
 
     run_dir = prepare_run()
     run_dir = run_agent(run_dir)
     run_dir = run_eval(run_dir)
-    summarize_and_log(run_dir)
+    run_dir = summarize(run_dir)
+    publish_artifacts(run_dir)
 
 
 evaluate_agent()

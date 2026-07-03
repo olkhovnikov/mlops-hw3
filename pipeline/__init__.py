@@ -12,7 +12,9 @@ from pipeline.helpers import (
     log_mlflow_run,
     prepare_run_dir,
     run_agent_batch,
+    run_s3_uri,
     run_swebench_eval,
+    upload_run_to_s3,
     write_manifest,
 )
 
@@ -23,5 +25,7 @@ __all__ = [
     "run_swebench_eval",
     "collect_metrics",
     "write_manifest",
+    "upload_run_to_s3",
+    "run_s3_uri",
     "log_mlflow_run",
 ]
