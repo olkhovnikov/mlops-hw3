@@ -1,12 +1,14 @@
 # Local infra for the evaluation pipeline.
 #
-# Step 1 (current): MinIO as a local S3 for run artifacts.
-# Step 2 (planned): add MLflow server + Airflow services here.
+# Step 1: MinIO as a local S3 for run artifacts.
+# Step 2: MLflow tracking server (artifacts proxied into MinIO).
+# Step 3 (planned): add Airflow services here (currently run standalone).
 #
 # Usage:
-#   docker compose up -d minio createbucket
+#   docker compose up -d          # start MinIO + bucket + MLflow; leave running
 #   MinIO S3 API  -> http://localhost:9000
 #   MinIO console -> http://localhost:9001  (minioadmin / minioadmin)
+#   MLflow UI     -> http://localhost:5000
 
 services:
   minio:
@@ -39,5 +41,37 @@ services:
       echo 'bucket ready: ${S3_BUCKET:-swe-runs}'
       "
 
+  # MLflow tracking server. Metadata in sqlite (volume); artifacts proxied to
+  # MinIO via --serve-artifacts, so pipeline clients only need MLFLOW_TRACKING_URI
+  # (no S3 creds for MLflow). Pinned to the client's mlflow version.
+  mlflow:
+    image: python:3.12-slim
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+    # Single-line script on purpose: a folded scalar with indented continuation
+    # lines keeps the newlines, which would truncate the `mlflow server` command.
+    command:
+      - sh
+      - -c
+      - "pip install --no-cache-dir mlflow==3.14.0 boto3 && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db --serve-artifacts --artifacts-destination s3://${S3_BUCKET:-swe-runs}/mlflow"
+    volumes:
+      - mlflow-data:/mlflow
+    depends_on:
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
 volumes:
   minio-data:
+  mlflow-data:

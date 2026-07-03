@@ -1,8 +1,8 @@
 # REPORT
 
-> Phase 1 done (configurable DAG + reproducible run folder + MLflow) + S3
-> artifact upload to local MinIO. Remaining Phase 3 (DockerOperator, Airflow +
-> MLflow on docker-compose) pending — will expand then.
+> Phase 1 done (configurable DAG + reproducible run folder). Phase 3: MLflow
+> server + MinIO (S3) run via docker-compose. Remaining (DockerOperator, Airflow
+> itself on compose) pending — Airflow still runs standalone for now.
 
 ## Pipeline
 
@@ -26,30 +26,27 @@ runs/<run-id>/
   config.json  run-agent/{preds.json, <instance>/*.traj.json}
   run-eval/{<model>.<run-id>.json, logs/...}  metrics.json  manifest.json
 ```
-One folder reconstructs the whole run. MLflow logs params + metrics + artifact
-refs to a local SQLite store (`MLFLOW_TRACKING_URI` repoints to Phase 3 server).
+One folder reconstructs the whole run.
 
-## Object storage (MinIO)
-
-`publish_artifacts` uploads `runs/<run-id>/` to S3, records the `s3://` URI in
-`manifest.json` + the MLflow `artifact_s3_uri` tag. Locally, S3 is a MinIO
-container (`docker-compose.yaml`):
+## Infra (docker-compose): MinIO + MLflow
 
 ```bash
-docker compose up -d          # start MinIO + create bucket; leave running
-docker compose ps             # check healthy; console: http://localhost:9001 (minioadmin/minioadmin)
+docker compose up -d          # start MinIO (+bucket) and MLflow; leave running
+docker compose ps             # check healthy
 docker compose down [-v]      # stop (‑v also wipes stored artifacts)
 ```
-
-Start MinIO **before** triggering a DAG. Upload is opt-in via `S3_ENDPOINT_URL`
-(see `.env.example`): unset it and `publish_artifacts` skips upload and keeps
-artifacts local.
+Start this **before** triggering a DAG. Two services:
+- **MinIO** — S3 store. `publish_artifacts` uploads `runs/<run-id>/` there and
+  records the `s3://` URI in `manifest.json` + the MLflow `artifact_s3_uri` tag.
+  Console: http://localhost:9001 (`minioadmin`/`minioadmin`). S3 upload is opt-in
+  via `S3_ENDPOINT_URL`.
+- **MLflow** — tracking server (`MLFLOW_TRACKING_URI=http://localhost:5000`).
+  Metadata in a sqlite volume; artifacts proxied into MinIO (`--serve-artifacts`),
+  so clients need only the tracking URI. Unset `MLFLOW_TRACKING_URI` to fall back
+  to a local `sqlite:///mlflow.db` store.
 
 ## View in MLflow
 
-```bash
-uv run mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5000
-```
 Forward port 5000 (`ssh -L 5000:localhost:5000 <user>@<vm-host>`), open
 http://localhost:5000, select the **mini-swe-bench** experiment. Each run is
 named by `run-id`; tick multiple runs → **Compare** to diff params/metrics.
