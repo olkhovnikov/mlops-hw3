@@ -14,7 +14,7 @@ import argparse
 import json
 from pathlib import Path
 
-from pipeline.helpers import (
+from pipeline import (
     build_run_config,
     collect_metrics,
     load_config,
