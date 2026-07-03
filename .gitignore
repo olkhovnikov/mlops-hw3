@@ -8,5 +8,10 @@ __pycache__
 
 /logs/
 
+# Pipeline outputs & local MLflow store (commit a small sample run with `git add -f`)
+/runs/
+/mlflow.db
+/mlruns/
+
 mini-swe-agent/
 SWE-bench/
