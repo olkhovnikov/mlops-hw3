@@ -10,12 +10,22 @@ env), and every step reads/writes a single reproducible `runs/<run-id>/` tree.
 
 import json
 import subprocess
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.sdk import Param, dag, get_current_context, task
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Baseline for every task: retry transient failures with exponential backoff.
+# Long, network-bound stages (agent/eval) and the deterministic ones override
+# `retries` and `execution_timeout` individually below.
+DEFAULT_ARGS = {
+    "retries": 1,
+    "retry_delay": timedelta(minutes=1),
+    "retry_exponential_backoff": True,
+    "max_retry_delay": timedelta(minutes=10),
+}
 
 
 def _pipeline(step_args, capture=False):
@@ -40,6 +50,8 @@ def _pipeline(step_args, capture=False):
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
+    default_args=DEFAULT_ARGS,
+    dagrun_timeout=timedelta(hours=6),
     tags=["swe-bench", "mini-swe-agent", "evaluation"],
     params={
         # Required.
@@ -71,7 +83,7 @@ def _pipeline(step_args, capture=False):
     },
 )
 def evaluate_agent():
-    @task
+    @task(execution_timeout=timedelta(minutes=5))
     def prepare_run() -> str:
         """Read params, build config, create runs/<run-id>/config.json."""
         params = dict(get_current_context()["params"])
@@ -83,25 +95,25 @@ def evaluate_agent():
                 return line.split("=", 1)[1].strip()
         raise RuntimeError("prepare step did not emit a RUN_DIR sentinel")
 
-    @task
+    @task(retries=2, execution_timeout=timedelta(hours=3))
     def run_agent(run_dir: str) -> str:
         """Run mini-swe-agent batch -> run-agent/preds.json + trajectories."""
         _pipeline(["agent", "--run-dir", run_dir])
         return run_dir
 
-    @task
+    @task(retries=2, execution_timeout=timedelta(hours=3))
     def run_eval(run_dir: str) -> str:
         """Evaluate preds.json with SWE-bench -> run-eval/ logs + report."""
         _pipeline(["eval", "--run-dir", run_dir])
         return run_dir
 
-    @task
+    @task(retries=0, execution_timeout=timedelta(minutes=5))
     def summarize(run_dir: str) -> str:
         """Parse eval reports -> metrics.json + manifest.json."""
         _pipeline(["summarize", "--run-dir", run_dir])
         return run_dir
 
-    @task
+    @task(retries=3, execution_timeout=timedelta(minutes=30))
     def publish_artifacts(run_dir: str) -> str:
         """Upload runs/<run-id>/ to S3/MinIO (if configured) and log to MLflow."""
         _pipeline(["publish", "--run-dir", run_dir])
