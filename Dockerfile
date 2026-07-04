@@ -9,6 +9,11 @@ RUN apt-get update && apt-get install -y \
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Install uv's managed Python in a world-readable dir instead of /root (0700),
+# so the container can run as a non-root user (DockerOperator `user=`) and still
+# reach the interpreter the venv points at.
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python
+
 WORKDIR /mlops-assignment
 
 COPY pyproject.toml .

@@ -37,6 +37,9 @@ x-airflow-common: &airflow-common
     HOST_PROJECT_DIR: ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR to the repo path on the host}
     AIRFLOW_PROJECT_IMAGE: ${AIRFLOW_PROJECT_IMAGE:-swe-pipeline:latest}
     DOCKER_NETWORK: swe-net
+    # Run task containers as the host user (uid) with the docker group (gid), so
+    # files written under runs/ are host-owned yet the socket stays usable.
+    TASK_RUN_USER: "${AIRFLOW_UID:-50000}:${DOCKER_GID:-999}"
     # --- Forwarded by the DAG into each task container ---
     NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
     MLFLOW_TRACKING_URI: http://mlflow:5000

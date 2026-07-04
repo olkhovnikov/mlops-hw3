@@ -36,6 +36,13 @@ DOCKER_URL = os.environ.get("DOCKER_URL", "unix://var/run/docker.sock")
 # Where the pipeline lives inside the image (matches the Dockerfile WORKDIR).
 IMAGE_WORKDIR = "/mlops-assignment"
 
+# Run task containers as this "uid:gid" so files written under runs/ are owned
+# by the host user (not root). The gid is the host docker group so the mounted
+# socket stays usable. Compose sets this from AIRFLOW_UID:DOCKER_GID; unset ->
+# image default (root). HOME is redirected to a writable dir since that uid has
+# no home in the image (tools cache to ~/.cache).
+TASK_RUN_USER = os.environ.get("TASK_RUN_USER")
+
 # Host env forwarded into every task container. Absent keys are simply skipped,
 # so the pipeline degrades gracefully (e.g. no S3 vars -> artifacts stay local).
 ENV_PASSTHROUGH = [
@@ -91,7 +98,8 @@ def _pipeline_task(task_id, command, *, needs_docker=False, **op_kwargs):
         task_id=task_id,
         image=PROJECT_IMAGE,
         command=command,
-        environment=_task_env(),
+        environment={**_task_env(), "HOME": "/tmp"},
+        user=TASK_RUN_USER,  # None -> image default (root)
         mounts=mounts,
         working_dir=IMAGE_WORKDIR,
         docker_url=DOCKER_URL,

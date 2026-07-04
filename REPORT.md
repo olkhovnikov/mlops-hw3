@@ -33,8 +33,10 @@ docker compose down [-v]      # stop (-v also wipes volumes)
 
 Required `.env` values for the compose Airflow (see `.env.example`):
 - `HOST_PROJECT_DIR` — absolute repo path on the host (bind-mount source translation).
-- `AIRFLOW_UID` (`id -u`) — Airflow containers run as your user so mounted `logs/` stays writable.
-- `DOCKER_GID` (`getent group docker | cut -d: -f3`) — so the mounted docker socket is usable.
+- `AIRFLOW_UID` (`id -u`) — Airflow *and* task containers run as this uid, so mounted
+  `logs/` and the `runs/` artifacts they write stay host-owned (not root).
+- `DOCKER_GID` (`getent group docker | cut -d: -f3`) — task containers' group, so the
+  mounted docker socket is usable while files stay host-owned.
 
 Services (all on the `swe-net` network):
 - **Airflow** (LocalExecutor): `postgres`, `airflow-init` (db migrate), `airflow-apiserver`,
@@ -81,10 +83,9 @@ named by `run-id`; tick multiple runs → **Compare** to diff params/metrics.
 `resolved_rate=1.0` (1/1); its artifacts are uploaded to `s3://swe-runs/runs/...`
 and logged to the MLflow `mini-swe-bench` experiment.
 
-## Notes / known caveats
+## Screenshots (UI evidence)
 
-- Screenshots to capture after a UI-triggered run: `screenshots/airflow_dag.png`,
-  `screenshots/mlflow_runs.png`, `screenshots/object_storage_artifacts.png`.
-- The pipeline image runs as root, so files it writes under `runs/` are
-  root-owned on the host (readable/committable; use a root helper container to
-  delete). Fixable later by running the task containers as the host uid.
+In `screenshots/`:
+- `airflow_dag.png` — `evaluate_agent` run succeeded; all 5 tasks green, each a `DockerOperator`.
+- `mlflow_runs.png` — `mini-swe-bench` experiment with logged runs, metrics, and params.
+- `object_storage_artifacts.png` — MinIO `swe-runs` bucket holding the uploaded `runs/<run-id>/` tree.
