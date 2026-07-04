@@ -1,14 +1,64 @@
-# Local infra for the evaluation pipeline.
+# Local infra for the evaluation pipeline: MinIO (S3) + MLflow + Airflow.
 #
-# Step 1: MinIO as a local S3 for run artifacts.
-# Step 2: MLflow tracking server (artifacts proxied into MinIO).
-# Step 3 (planned): add Airflow services here (currently run standalone).
+#   docker compose --profile build build   # build the project image (one-off)
+#   docker compose up -d                    # start MinIO, MLflow, Airflow
+#   docker compose ps                        # check health
+#   docker compose down [-v]                 # stop (-v also wipes volumes)
 #
-# Usage:
-#   docker compose up -d          # start MinIO + bucket + MLflow; leave running
-#   MinIO S3 API  -> http://localhost:9000
-#   MinIO console -> http://localhost:9001  (minioadmin / minioadmin)
+# Endpoints (forward these ports over SSH):
+#   Airflow UI    -> http://localhost:8080  (no login: SimpleAuthManager all-admins)
 #   MLflow UI     -> http://localhost:5000
+#   MinIO console -> http://localhost:9001  (minioadmin / minioadmin)
+#   MinIO S3 API  -> http://localhost:9000
+#
+# Airflow runs the pipeline via DockerOperator: each task launches a sibling
+# container from the project image (AIRFLOW_PROJECT_IMAGE) on `swe-net`, talking
+# to the host Docker daemon through the mounted socket (docker-out-of-docker).
+# HOST_PROJECT_DIR must be the repo path *on the host* so those sibling
+# containers bind-mount runs/ from the right place.
+
+x-airflow-common: &airflow-common
+  image: ${AIRFLOW_IMAGE_NAME:-apache/airflow:3.2.2}
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: 'true'
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    # Expose the scheduler's HTTP health server on :8974 (its healthcheck below).
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # Shared secrets so scheduler-run tasks authenticate to the api-server.
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_SECRET_KEY:-local-demo-secret-key}
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:-local-demo-jwt-secret}
+    # DockerOperator needs the docker provider; installed at container start.
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-apache-airflow-providers-docker}
+    # --- Config the evaluate_agent DAG reads for its DockerOperator tasks ---
+    HOST_PROJECT_DIR: ${HOST_PROJECT_DIR:?set HOST_PROJECT_DIR to the repo path on the host}
+    AIRFLOW_PROJECT_IMAGE: ${AIRFLOW_PROJECT_IMAGE:-swe-pipeline:latest}
+    DOCKER_NETWORK: swe-net
+    # --- Forwarded by the DAG into each task container ---
+    NEBIUS_API_KEY: ${NEBIUS_API_KEY:-}
+    MLFLOW_TRACKING_URI: http://mlflow:5000
+    MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+    S3_ENDPOINT_URL: http://minio:9000
+    S3_BUCKET: ${S3_BUCKET:-swe-runs}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+    - /var/run/docker.sock:/var/run/docker.sock
+  user: "${AIRFLOW_UID:-50000}:0"
+  # Supplementary group so the mounted docker socket is accessible.
+  group_add:
+    - "${DOCKER_GID:-999}"
+  networks:
+    - swe-net
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
 
 services:
   minio:
@@ -22,6 +72,8 @@ services:
       MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
     volumes:
       - minio-data:/data
+    networks:
+      - swe-net
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -34,6 +86,8 @@ services:
     depends_on:
       minio:
         condition: service_healthy
+    networks:
+      - swe-net
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 ${AWS_ACCESS_KEY_ID:-minioadmin} ${AWS_SECRET_ACCESS_KEY:-minioadmin} &&
@@ -53,6 +107,10 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      # MLflow 3.x validates the Host header (anti DNS-rebinding). In-container
+      # clients reach the server as `mlflow:5000`, so allow that host. `*`
+      # is fine for a local, SSH-forwarded deployment.
+      MLFLOW_SERVER_ALLOWED_HOSTS: ${MLFLOW_SERVER_ALLOWED_HOSTS:-*}
     # Single-line script on purpose: a folded scalar with indented continuation
     # lines keeps the newlines, which would truncate the `mlflow server` command.
     command:
@@ -61,6 +119,8 @@ services:
       - "pip install --no-cache-dir mlflow==3.14.0 boto3 && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:////mlflow/mlflow.db --serve-artifacts --artifacts-destination s3://${S3_BUCKET:-swe-runs}/mlflow"
     volumes:
       - mlflow-data:/mlflow
+    networks:
+      - swe-net
     depends_on:
       minio:
         condition: service_healthy
@@ -72,6 +132,99 @@ services:
       retries: 12
       start_period: 90s
 
+  # Airflow metadata database.
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - swe-net
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: run DB migrations, then exit. Everything else waits on it.
+  # Keep the image's own /entrypoint (it sets up the env + installs
+  # _PIP_ADDITIONAL_REQUIREMENTS); just hand it a bash command to run.
+  airflow-init:
+    <<: *airflow-common
+    command:
+      - bash
+      - -c
+      - "airflow db migrate"
+    restart: on-failure
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Build-only helper: `docker compose --profile build build project-image`
+  # produces the image the DockerOperator tasks run. Never started by `up`.
+  project-image:
+    build:
+      context: .
+    image: ${AIRFLOW_PROJECT_IMAGE:-swe-pipeline:latest}
+    profiles:
+      - build
+    entrypoint: ["true"]
+
 volumes:
   minio-data:
   mlflow-data:
+  postgres-data:
+
+networks:
+  swe-net:
+    name: swe-net

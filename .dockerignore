@@ -1,0 +1,17 @@
+# Keep the build context small: the image only needs pyproject/uv.lock,
+# scripts/, and pipeline/. Everything below is either huge, secret, or
+# regenerated inside the image.
+.venv
+.git
+__pycache__
+**/__pycache__
+.ruff_cache
+.env
+runs/
+mlruns/
+mlflow.db
+sample/
+logs/
+screenshots/
+mini-swe-agent/
+SWE-bench/

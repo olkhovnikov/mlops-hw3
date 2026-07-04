@@ -30,8 +30,10 @@ from pipeline import (
 
 
 def _emit_run_dir(run_dir: Path) -> None:
-    # Sentinel line the DAG greps out of stdout to thread run_dir via XCom.
-    print(f"RUN_DIR={Path(run_dir).resolve()}", flush=True)
+    # Print the resolved run dir as the FINAL stdout line: the DockerOperator
+    # `prepare` task pushes a container's last log line to XCom, and downstream
+    # tasks pull this path verbatim as --run-dir. Keep it last and unadorned.
+    print(Path(run_dir).resolve(), flush=True)
 
 
 def cmd_prepare(args) -> None:

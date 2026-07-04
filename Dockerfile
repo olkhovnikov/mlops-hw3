@@ -22,3 +22,8 @@ COPY scripts scripts/
 
 # Optional but useful if your script lacks executable bit or shebang issues:
 RUN chmod +x scripts/*.sh
+
+# The pipeline package is the unit of work the DockerOperator tasks run via
+# `python -m pipeline <step>`. No build-system in pyproject, so it isn't
+# installed as a package; `python -m` resolves it from the WORKDIR instead.
+COPY pipeline pipeline/
